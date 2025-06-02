@@ -77,7 +77,10 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
     // Framework status
     @Published var isRunning = false
     @Published var hasLiDAR = false
+    @Published var hasUltrawide = false
+    @Published var currentCameraType = "Unknown"
     @Published var statusMessage = "Not initialized"
+    @Published var debugMode = 0 // 0: standard, 1: no scene reconstruction, 2: minimal debug
     
     // Initialize the framework
     private override init() {
@@ -89,42 +92,229 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         // Check LiDAR availability
         hasLiDAR = ARWorldTrackingConfiguration.supportsFrameSemantics([.sceneDepth, .smoothedSceneDepth])
         
+        // Check ultrawide camera availability
+        hasUltrawide = detectUltrawideSupport()
+        
         // Set up session
         session.delegate = self
     }
     
-    // Start the AR session with the given options
-    func start() {
-        guard !isRunning else { return }
+    // Detect if ultrawide camera is supported
+    private func detectUltrawideSupport() -> Bool {
+        let supportedFormats = ARWorldTrackingConfiguration.supportedVideoFormats
+        return supportedFormats.contains { format in
+            // Ultrawide cameras typically have field of view > 100 degrees
+            // and specific capture device types
+            if #available(iOS 13.0, *) {
+                return format.captureDeviceType == .builtInUltraWideCamera
+            }
+            return false
+        }
+    }
+    
+    // Find the best ultrawide video format
+    private func selectUltrawideVideoFormat() -> ARConfiguration.VideoFormat? {
+        let supportedFormats = ARWorldTrackingConfiguration.supportedVideoFormats
+        
+        // Look for ultrawide camera formats
+        let ultrawideFormats = supportedFormats.filter { format in
+            if #available(iOS 13.0, *) {
+                return format.captureDeviceType == .builtInUltraWideCamera
+            }
+            return false
+        }
+        
+        // Prefer higher resolution formats
+        return ultrawideFormats.max { format1, format2 in
+            let resolution1 = format1.imageResolution.width * format1.imageResolution.height
+            let resolution2 = format2.imageResolution.width * format2.imageResolution.height
+            return resolution1 < resolution2
+        }
+    }
+    
+    // Create and configure a fresh AR configuration
+    private func createConfiguration() -> ARWorldTrackingConfiguration {
+        let config = ARWorldTrackingConfiguration()
+        
+        // Try to use ultrawide camera if available
+        if hasUltrawide, let ultrawideFormat = selectUltrawideVideoFormat() {
+            config.videoFormat = ultrawideFormat
+            currentCameraType = "Ultrawide"
+        } else {
+            currentCameraType = "Standard Wide"
+        }
         
         // Configure the session for depth data if available
         if hasLiDAR {
-            configuration.frameSemantics = [.sceneDepth, .smoothedSceneDepth]
-            statusMessage = "LiDAR sensor enabled"
-        } else {
-            statusMessage = "Device does not have LiDAR, using camera only"
+            config.frameSemantics = [.sceneDepth, .smoothedSceneDepth]
+            
+            // Check if scene reconstruction is supported and conditionally enable based on debug mode
+            if debugMode != 1 && ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+                config.sceneReconstruction = .mesh
+                print("✅ Scene reconstruction enabled")
+            } else {
+                print("❌ Scene reconstruction disabled (debug mode \(debugMode))")
+            }
         }
         
         // Enable plane detection
-        configuration.planeDetection = [.horizontal, .vertical]
+        config.planeDetection = [.horizontal, .vertical]
         
-        // Run the session
-        session.run(configuration)
+        // Log configuration details
+        print("📱 Device: \(UIDevice.current.model)")
+        print("🔧 LiDAR: \(hasLiDAR)")
+        print("📹 Camera: \(currentCameraType)")
+        print("🎯 Frame semantics: \(config.frameSemantics)")
+        print("🔍 Scene reconstruction: \(config.sceneReconstruction)")
+        
+        return config
+    }
+    
+    // Start the AR session with the given options
+    func start() {
+        // Check actual session state, not just our flag
+        guard session.currentFrame == nil || !isRunning else {
+            print("⚠️ Session already running, skipping start")
+            return
+        }
+        
+        // Create fresh configuration
+        configuration = createConfiguration()
+        
+        // Update status message
+        if hasLiDAR {
+            statusMessage = "LiDAR enabled, using \(currentCameraType) camera"
+        } else {
+            statusMessage = "Using \(currentCameraType) camera (no LiDAR)"
+        }
+        
+        // Run the session with proper options
+        session.run(configuration, options: [])
         isRunning = true
+        print("✅ AR session started")
     }
     
     // Stop the AR session
     func stop() {
-        guard isRunning else { return }
+        guard isRunning else {
+            print("⚠️ Session not running, skipping stop")
+            return
+        }
         
         session.pause()
         isRunning = false
         statusMessage = "Session paused"
+        print("⏸️ AR session stopped")
+        
+        // Clear current data
+        clearCurrentData()
+    }
+    
+    // Reset the AR session completely
+    func reset() {
+        print("🔄 Resetting AR session...")
+        
+        // Clear current data first
+        clearCurrentData()
+        
+        // Stop the session properly if it's running
+        if isRunning {
+            session.pause()
+            isRunning = false
+        }
+        
+        // Wait a moment for the session to fully stop
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            // Create fresh configuration
+            self.configuration = self.createConfiguration()
+            
+            // Update status message
+            self.statusMessage = "Resetting session..."
+            
+            // Run session with reset options
+            self.session.run(self.configuration, options: [.resetTracking, .removeExistingAnchors])
+            self.isRunning = true
+            print("✅ AR session reset complete")
+            
+            // Update status after reset
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if self.hasLiDAR {
+                    self.statusMessage = "LiDAR enabled, using \(self.currentCameraType) camera (reset)"
+                } else {
+                    self.statusMessage = "Using \(self.currentCameraType) camera (no LiDAR) (reset)"
+                }
+            }
+        }
+    }
+    
+    // Clear all current sensor data
+    private func clearCurrentData() {
+        DispatchQueue.main.async {
+            self.currentDepthData = nil
+            self.currentPointCloud = nil
+            self.currentCameraData = nil
+            self.currentPose = nil
+        }
+    }
+    
+    // Toggle debug mode to help diagnose rendering differences
+    func toggleDebugMode() {
+        debugMode = (debugMode + 1) % 3
+        
+        switch debugMode {
+        case 0:
+            statusMessage = "Debug: Standard mode"
+        case 1:
+            statusMessage = "Debug: No scene reconstruction"
+        case 2:
+            statusMessage = "Debug: Minimal debug options"
+        default:
+            break
+        }
+        
+        // Reset to apply new debug settings
+        reset()
     }
     
     // MARK: - ARSessionDelegate methods
     
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        // Check tracking quality and provide feedback
+        let trackingState = frame.camera.trackingState
+        
+        switch trackingState {
+        case .normal:
+            // Only update status if it's currently showing tracking issues
+            if statusMessage.contains("tracking") {
+                DispatchQueue.main.async {
+                    if self.hasLiDAR {
+                        self.statusMessage = "LiDAR enabled, using \(self.currentCameraType) camera"
+                    } else {
+                        self.statusMessage = "Using \(self.currentCameraType) camera (no LiDAR)"
+                    }
+                }
+            }
+        case .limited(let reason):
+            DispatchQueue.main.async {
+                switch reason {
+                case .initializing:
+                    self.statusMessage = "Initializing tracking... (move device slowly)"
+                case .insufficientFeatures:
+                    self.statusMessage = "Tracking limited - point at textured surfaces"
+                case .excessiveMotion:
+                    self.statusMessage = "Tracking limited - move device slower"
+                case .relocalizing:
+                    self.statusMessage = "Relocalizing tracking..."
+                @unknown default:
+                    self.statusMessage = "Tracking limited"
+                }
+            }
+        case .notAvailable:
+            DispatchQueue.main.async {
+                self.statusMessage = "Tracking not available"
+            }
+        }
+        
         // Process camera image
         let cameraData = CameraData(
             imageBuffer: frame.capturedImage,
@@ -133,7 +323,9 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
             timestamp: frame.timestamp
         )
         
-        currentCameraData = cameraData
+        DispatchQueue.main.async {
+            self.currentCameraData = cameraData
+        }
         cameraPublisher.send(cameraData)
         
         // Process device pose
@@ -143,7 +335,9 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
             timestamp: frame.timestamp
         )
         
-        currentPose = pose
+        DispatchQueue.main.async {
+            self.currentPose = pose
+        }
         posePublisher.send(pose)
         
         // Process depth data if available
@@ -154,7 +348,9 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
                 timestamp: frame.timestamp
             )
             
-            currentDepthData = depthData
+            DispatchQueue.main.async {
+                self.currentDepthData = depthData
+            }
             depthPublisher.send(depthData)
             
             // Generate point cloud from depth data
@@ -163,17 +359,24 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
     }
     
     func session(_ session: ARSession, didFailWithError error: Error) {
-        statusMessage = "Session failed: \(error.localizedDescription)"
-        isRunning = false
+        DispatchQueue.main.async {
+            self.statusMessage = "Session failed: \(error.localizedDescription)"
+            self.isRunning = false
+        }
     }
     
     func sessionWasInterrupted(_ session: ARSession) {
-        statusMessage = "Session interrupted"
+        DispatchQueue.main.async {
+            self.statusMessage = "Session interrupted"
+        }
     }
     
     func sessionInterruptionEnded(_ session: ARSession) {
-        statusMessage = "Session resumed"
-        start() // Restart the session
+        DispatchQueue.main.async {
+            self.statusMessage = "Session resumed"
+            // Don't automatically restart - let user control this
+            self.isRunning = false
+        }
     }
     
     func getSession() -> ARSession {
@@ -205,7 +408,9 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
             timestamp: cameraData.timestamp
         )
         
-        currentPointCloud = pointCloud
+        DispatchQueue.main.async {
+            self.currentPointCloud = pointCloud
+        }
         pointCloudPublisher.send(pointCloud)
     }
 }
@@ -222,8 +427,8 @@ struct ARViewContainer: UIViewRepresentable {
     @ObservedObject var framework = RoboticsFramework.shared
     
     func makeUIView(context: Context) -> ARView {
-        // Create ARView
-        let arView = ARView(frame: .zero)
+        // Create ARView with manual session configuration
+        let arView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
         
         // Use the session from the framework
         arView.session = framework.getSession()
@@ -235,16 +440,37 @@ struct ARViewContainer: UIViewRepresentable {
         coachingOverlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         arView.addSubview(coachingOverlay)
         
-        // Add some debug visualizations
+        // Add some debug visualizations based on debug mode
         #if DEBUG
-        arView.debugOptions = [.showFeaturePoints, .showAnchorOrigins, .showAnchorGeometry]
+        switch framework.debugMode {
+        case 0:
+            arView.debugOptions = [.showFeaturePoints, .showAnchorOrigins, .showAnchorGeometry]
+        case 1:
+            arView.debugOptions = [.showFeaturePoints, .showAnchorOrigins, .showAnchorGeometry]
+        case 2:
+            arView.debugOptions = [.showFeaturePoints]
+        default:
+            arView.debugOptions = []
+        }
         #endif
         
         return arView
     }
     
     func updateUIView(_ uiView: ARView, context: Context) {
-        // Update view if needed
+        // Update debug options when debug mode changes
+        #if DEBUG
+        switch framework.debugMode {
+        case 0:
+            uiView.debugOptions = [.showFeaturePoints, .showAnchorOrigins, .showAnchorGeometry]
+        case 1:
+            uiView.debugOptions = [.showFeaturePoints, .showAnchorOrigins, .showAnchorGeometry]
+        case 2:
+            uiView.debugOptions = [.showFeaturePoints]
+        default:
+            uiView.debugOptions = []
+        }
+        #endif
     }
 }
 
@@ -269,6 +495,14 @@ struct ContentView: View {
                     
                     Text(framework.statusMessage)
                         .font(.subheadline)
+                    
+                    Text("Camera: \(framework.currentCameraType)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    Text("Debug Mode: \(framework.debugMode)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                     
                     if let depthData = framework.currentDepthData {
                         Text("Depth data available: \(String(format: "%.2f", depthData.timestamp))")
@@ -295,13 +529,18 @@ struct ContentView: View {
                         .cornerRadius(8)
                         
                         Button("Reset") {
-                            framework.stop()
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                                framework.start()
-                            }
+                            framework.reset()
                         }
                         .padding()
                         .background(Color.blue)
+                        .foregroundColor(.white)
+                        .cornerRadius(8)
+                        
+                        Button("Debug") {
+                            framework.toggleDebugMode()
+                        }
+                        .padding()
+                        .background(Color.orange)
                         .foregroundColor(.white)
                         .cornerRadius(8)
                     }
@@ -313,8 +552,10 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            // Start the framework when the view appears
-            framework.start()
+            // Only start if not already running
+            if !framework.isRunning {
+                framework.start()
+            }
         }
         .onDisappear {
             // Stop the framework when the view disappears
