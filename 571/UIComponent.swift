@@ -80,6 +80,23 @@ struct StatusOverlay: View {
                         .background(Color.orange.opacity(0.7))
                         .foregroundColor(.white)
                         .cornerRadius(4)
+                    
+                    // Frontier exploration status
+                    if let frontierTarget = framework.occupancyMapData.frontierTarget {
+                        Text("Target: (\(frontierTarget.x), \(frontierTarget.y))")
+                            .font(.caption2)
+                            .padding(4)
+                            .background(Color.red.opacity(0.7))
+                            .foregroundColor(.white)
+                            .cornerRadius(4)
+                    } else {
+                        Text("Exploration: Complete")
+                            .font(.caption2)
+                            .padding(4)
+                            .background(Color.green.opacity(0.7))
+                            .foregroundColor(.white)
+                            .cornerRadius(4)
+                    }
                 }
             }
         }

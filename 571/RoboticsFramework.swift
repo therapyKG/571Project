@@ -83,7 +83,7 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
     private let depthSamplingRate = 4 // Process every Nth pixel for performance
     
     // Robot navigation parameters
-    private let robotHeight: Float = 0.3 // Robot height (meters)
+    private let robotHeight: Float = 1 // Robot height (meters)
     private let minObstacleHeight: Float = 0.1 // Minimum height above floor to consider obstacle
     private let maxObstacleHeight: Float = 1.8 // Maximum height to consider (ignore ceiling)
     private let floorDetectionTolerance: Float = 0.1 // Tolerance for floor plane detection
@@ -217,6 +217,63 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         return config
     }
     
+    // MARK: - Frontier Exploration
+    
+    // Find the nearest unexplored cell to the robot position
+    private func findNearestUnexploredCell(robotPos: (x: Int, y: Int), map: [[Int]]) -> (x: Int, y: Int)? {
+        let maxSearchRadius = 100 // Search within 100 cells of robot
+        var nearestDistance = Float.infinity
+        var nearestCell: (x: Int, y: Int)? = nil
+        
+        // Search in expanding squares around robot position
+        for radius in 1...maxSearchRadius {
+            let minX = max(0, robotPos.x - radius)
+            let maxX = min(499, robotPos.x + radius)
+            let minY = max(0, robotPos.y - radius)
+            let maxY = min(499, robotPos.y + radius)
+            
+            // Check cells at current radius
+            for x in minX...maxX {
+                for y in minY...maxY {
+                    // Only check perimeter of current radius (not interior)
+                    let isPerimeter = (x == minX || x == maxX || y == minY || y == maxY)
+                    if !isPerimeter { continue }
+                    
+                    // Check if cell is unexplored
+                    if map[y][x] == 2 { // Unexplored
+                        let distance = sqrt(Float((x - robotPos.x) * (x - robotPos.x) + (y - robotPos.y) * (y - robotPos.y)))
+                        if distance < nearestDistance {
+                            nearestDistance = distance
+                            nearestCell = (x: x, y: y)
+                        }
+                    }
+                }
+            }
+            
+            // If we found at least one unexplored cell at this radius, return the nearest
+            if nearestCell != nil {
+                return nearestCell
+            }
+        }
+        
+        return nil // No unexplored cells found within search radius
+    }
+    
+    // Update frontier target based on current map state
+    private func updateFrontierTarget(robotPos: (x: Int, y: Int), map: [[Int]], currentTarget: (x: Int, y: Int)?) -> (x: Int, y: Int)? {
+        // Check if current target is still valid (unexplored)
+        if let target = currentTarget {
+            if target.x >= 0 && target.x < 500 && target.y >= 0 && target.y < 500 {
+                if map[target.y][target.x] == 2 { // Still unexplored
+                    return target // Keep current target
+                }
+            }
+        }
+        
+        // Current target is explored or invalid, find new one
+        return findNearestUnexploredCell(robotPos: robotPos, map: map)
+    }
+    
     // MARK: - Session Control
     
     // Start the AR session with the given options
@@ -241,6 +298,27 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         session.run(configuration, options: [])
         isRunning = true
         print("✅ AR session started")
+        
+        // Initialize first frontier target
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self = self else { return }
+            let initialTarget = self.updateFrontierTarget(
+                robotPos: self.occupancyMapData.robotPosition,
+                map: self.occupancyMapData.map,
+                currentTarget: nil
+            )
+            
+            if let target = initialTarget {
+                self.occupancyMapData = OccupancyMapData(
+                    map: self.occupancyMapData.map,
+                    robotPosition: self.occupancyMapData.robotPosition,
+                    mapResolution: self.occupancyMapData.mapResolution,
+                    mapOrigin: self.occupancyMapData.mapOrigin,
+                    frontierTarget: target
+                )
+                print("🎯 Initial frontier target: (\(target.x), \(target.y))")
+            }
+        }
     }
     
     // Stop the AR session
@@ -383,7 +461,7 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // Reset all data
+            // Reset all data (including frontier target)
             self.occupancyMapData = OccupancyMapData()
             self.pointsProcessed = 0
             self.mapUpdates = 0
@@ -397,6 +475,7 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
             self.statusMessage = "Occupancy map cleared - Generation ID: \(newGenerationID)"
             
             print("✅ Map clear complete")
+            print("🎯 Frontier exploration reset")
         }
     }
     
@@ -627,15 +706,32 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
                     return
                 }
                 
+                // Update frontier target based on new map state
+                let newFrontierTarget = self.updateFrontierTarget(
+                    robotPos: mapData.robotPosition,
+                    map: discreteMap,
+                    currentTarget: mapData.frontierTarget
+                )
+                
                 self.occupancyMapData = OccupancyMapData(
                     map: discreteMap,
                     robotPosition: mapData.robotPosition,
                     mapResolution: mapData.mapResolution,
-                    mapOrigin: mapData.mapOrigin
+                    mapOrigin: mapData.mapOrigin,
+                    frontierTarget: newFrontierTarget
                 )
                 self.pointsProcessed += obstaclePoints.count
                 self.obstaclePointsFiltered = obstaclePoints.count
                 self.mapUpdates += 1
+                
+                // Log frontier target changes
+                if let target = newFrontierTarget {
+                    if mapData.frontierTarget == nil || mapData.frontierTarget!.x != target.x || mapData.frontierTarget!.y != target.y {
+                        print("🎯 New frontier target: (\(target.x), \(target.y))")
+                    }
+                } else if mapData.frontierTarget != nil {
+                    print("🏁 No more frontier targets - exploration complete!")
+                }
             }
         }
     }
@@ -706,7 +802,7 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
                 // Update floor plane
                 detectedFloorPlane = planeAnchor
                 floorY = planeAnchor.transform.columns.3.y
-                //print("🔄 Floor updated at Y: \(floorY)")
+                print("🔄 Floor updated at Y: \(floorY)")
             }
         }
     }
@@ -799,11 +895,19 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
                 
                 // Update robot position on occupancy map based on pose
                 if let robotMapPos = self.worldToMap(pose.position) {
+                    // Update frontier target for new robot position
+                    let newFrontierTarget = self.updateFrontierTarget(
+                        robotPos: robotMapPos,
+                        map: self.occupancyMapData.map,
+                        currentTarget: self.occupancyMapData.frontierTarget
+                    )
+                    
                     self.occupancyMapData = OccupancyMapData(
                         map: self.occupancyMapData.map,
                         robotPosition: robotMapPos,
                         mapResolution: self.occupancyMapData.mapResolution,
-                        mapOrigin: self.occupancyMapData.mapOrigin
+                        mapOrigin: self.occupancyMapData.mapOrigin,
+                        frontierTarget: newFrontierTarget
                     )
                 }
             }

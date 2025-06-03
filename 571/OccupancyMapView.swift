@@ -48,8 +48,15 @@ struct OccupancyMapView: View {
                         height: scale
                     )
                     
-                    // Color based on occupancy value
+                    // Color based on occupancy value, with special handling for frontier target
                     let color: Color = {
+                        // Check if this cell is the frontier target
+                        if let frontierTarget = mapData.frontierTarget,
+                           frontierTarget.x == x && frontierTarget.y == y {
+                            return .red // Frontier target is always red
+                        }
+                        
+                        // Regular occupancy coloring
                         switch value {
                         case 0: return .white // Free space
                         case 1: return .black // Occupied
@@ -133,8 +140,8 @@ struct OccupancyMapView: View {
                 at: CGPoint(x: size.width / 2, y: 20)
             )
             
-            // Show height filtering info
-            let heightText = "Height filter: 0.1m - 1.8m above floor"
+            // Show height filtering info and frontier exploration
+            let heightText = "Height filter: 0.1m - 1.8m | Red = Frontier target"
             context.draw(
                 Text(heightText)
                     .font(.system(size: 10, weight: .regular))

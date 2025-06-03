@@ -43,6 +43,7 @@ struct OccupancyMapData {
     let robotPosition: (x: Int, y: Int)
     let mapResolution: Float // meters per cell
     let mapOrigin: SIMD3<Float> // world coordinates of map center
+    let frontierTarget: (x: Int, y: Int)? // Current frontier exploration target
     
     init() {
         // Initialize with unknown map (value 2)
@@ -50,13 +51,15 @@ struct OccupancyMapData {
         self.robotPosition = (x: 250, y: 250) // Center of map
         self.mapResolution = 0.05 // 5cm per cell
         self.mapOrigin = SIMD3<Float>(0, 0, 0) // Map center at world origin
+        self.frontierTarget = nil // No frontier target initially
     }
     
-    init(map: [[Int]], robotPosition: (x: Int, y: Int), mapResolution: Float = 0.05, mapOrigin: SIMD3<Float> = SIMD3<Float>(0, 0, 0)) {
+    init(map: [[Int]], robotPosition: (x: Int, y: Int), mapResolution: Float = 0.05, mapOrigin: SIMD3<Float> = SIMD3<Float>(0, 0, 0), frontierTarget: (x: Int, y: Int)? = nil) {
         self.map = map
         self.robotPosition = robotPosition
         self.mapResolution = mapResolution
         self.mapOrigin = mapOrigin
+        self.frontierTarget = frontierTarget
     }
 }
 
