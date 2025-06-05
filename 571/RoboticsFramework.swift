@@ -1,8 +1,9 @@
 //
-//  RoboticsFramework.swift
+//  RoboticsFramework.swift (Simplified with Lightweight Localization)
 //  MobileRobotics
 //
 //  Created by Kurt Gu on 5/5/25.
+//  Updated with lightweight ARKit-native localization
 //
 
 import Foundation
@@ -20,6 +21,9 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
     // AR session and configuration
     private let session = ARSession()
     private var configuration: ARWorldTrackingConfiguration
+    
+    // Lightweight localization system (replaces complex enhanced system)
+    @Published var localizationManager = LightweightLocalizationManager()
     
     // Publishers for different data streams
     private let depthPublisher = PassthroughSubject<DepthData, Never>()
@@ -44,7 +48,7 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         posePublisher.eraseToAnyPublisher()
     }
     
-    // Current data values
+    // Current data values (simplified)
     @Published var currentDepthData: DepthData?
     @Published var currentPointCloud: PointCloudData?
     @Published var currentCameraData: CameraData?
@@ -53,8 +57,11 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
     
     // Occupancy map data with persistence
     @Published var occupancyMapData = OccupancyMapData()
-    private var persistentOccupancyMap: [[Float]] = Array(repeating: Array(repeating: 0.0, count: 500), count: 500) // Confidence values for each cell
+    private var persistentOccupancyMap: [[Float]] = Array(repeating: Array(repeating: 0.0, count: 500), count: 500)
     private let mapUpdateQueue = DispatchQueue(label: "com.robotics.mapupdate", qos: .userInitiated)
+    
+    // Metal GPU processor for occupancy mapping
+    @Published var metalOccupancyProcessor: MetalOccupancyProcessor?
     
     // Framework status
     @Published var isRunning = false
@@ -62,70 +69,124 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
     @Published var hasUltrawide = false
     @Published var currentCameraType = "Unknown"
     @Published var statusMessage = "Not initialized"
-    @Published var debugMode = 0 // 0: standard, 1: no scene reconstruction, 2: minimal debug
-    @Published var pointsProcessed = 0 // For debugging
-    @Published var mapUpdates = 0 // For debugging
-    @Published var floorDetected = false // Floor plane detection status
-    @Published var obstaclePointsFiltered = 0 // Points after height filtering
+    @Published var debugMode = 1
+    @Published var pointsProcessed = 0
+    @Published var mapUpdates = 0
+    @Published var floorDetected = false
+    @Published var obstaclePointsFiltered = 0
     
-    // Map generation tracking (for race condition prevention during map clearing)
-    private var privateMapGenerationID = 0 // Internal counter for background thread synchronization
-    @Published var mapGenerationID = 0 // Published version for UI display
+    // Simplified tracking status (from lightweight system)
+    @Published var isTrackingReliable = false
+    @Published var trackingQuality = "Unknown"
     
-    // Frame processing throttling
+    // Map generation tracking
+    private var privateMapGenerationID = 0
+    @Published var mapGenerationID = 0
+    
+    // Simplified frame processing (much faster)
     private var lastProcessedTime: TimeInterval = 0
-    private let minFrameInterval: TimeInterval = 0.1 // Process at most 10 FPS
+    private let minFrameInterval: TimeInterval = 0.1
     private var frameProcessingQueue = DispatchQueue(label: "com.robotics.frameprocessing", qos: .userInitiated)
     
-    // LiDAR processing parameters
-    private let maxDepthRange: Float = 5.0 // Maximum depth to consider (meters)
-    private let minDepthRange: Float = 0.1 // Minimum depth to consider (meters)
-    private let depthSamplingRate = 4 // Process every Nth pixel for performance
+    // LiDAR processing parameters (simplified)
+    private let maxDepthRange: Float = 3.0 // Reduced range for speed
+    private let minDepthRange: Float = 0.2
+    private let depthSamplingRate = 8 // More aggressive sampling for speed
     
     // Robot navigation parameters
-    private let robotHeight: Float = 1 // Robot height (meters)
-    private let minObstacleHeight: Float = 0.1 // Minimum height above floor to consider obstacle
-    private let maxObstacleHeight: Float = 1.8 // Maximum height to consider (ignore ceiling)
-    private let floorDetectionTolerance: Float = 0.1 // Tolerance for floor plane detection
+    private let robotHeight: Float = 1
+    private let minObstacleHeight: Float = 0.1
+    private let maxObstacleHeight: Float = 1.8
     
-    // Floor plane tracking
+    // Floor plane tracking (simplified)
     private var detectedFloorPlane: ARPlaneAnchor?
-    private var floorY: Float = 0.0 // Y coordinate of detected floor
+    private var floorY: Float = 0.0
+    
+    // Combine cancellables for localization system
+    private var cancellables = Set<AnyCancellable>()
     
     // Initialize the framework
     private override init() {
-        // Create configuration
         configuration = ARWorldTrackingConfiguration()
         
         super.init()
         
-        // Check LiDAR availability
+        // Check device capabilities
         hasLiDAR = ARWorldTrackingConfiguration.supportsFrameSemantics([.sceneDepth, .smoothedSceneDepth])
-        
-        // Check ultrawide camera availability
         hasUltrawide = detectUltrawideSupport()
         
         // Set up session
         session.delegate = self
         
-        // Initialize persistent occupancy map with unknown values
+        // Setup lightweight localization system
+        setupLightweightLocalization()
+        
+        // Initialize persistent occupancy map
         initializeEmptyOccupancyMap()
     }
     
-    // MARK: - Initialization and Configuration
+    // MARK: - Lightweight Localization Setup
     
-    // Initialize empty occupancy map
-    private func initializeEmptyOccupancyMap() {
-        // Increment generation ID to invalidate any pending updates
-        privateMapGenerationID += 1
+    private func setupLightweightLocalization() {
+        // Subscribe to lightweight localization manager updates
+        localizationManager.$currentRobotPosition
+            .sink { [weak self] position in
+                self?.updateOccupancyMapRobotPosition(position)
+            }
+            .store(in: &cancellables)
         
-        // Initialize persistent map with neutral confidence values
+        localizationManager.$currentHeading
+            .sink { [weak self] heading in
+                DispatchQueue.main.async {
+                    self?.currentHeading = heading
+                }
+            }
+            .store(in: &cancellables)
+        
+        localizationManager.$trackingQuality
+            .sink { [weak self] quality in
+                DispatchQueue.main.async {
+                    self?.trackingQuality = quality
+                }
+            }
+            .store(in: &cancellables)
+        
+        localizationManager.$isTrackingReliable
+            .sink { [weak self] isReliable in
+                DispatchQueue.main.async {
+                    self?.isTrackingReliable = isReliable
+                }
+            }
+            .store(in: &cancellables)
+    }
+    
+    private func updateOccupancyMapRobotPosition(_ position: (x: Int, y: Int)) {
+        // Update frontier target for new robot position
+        let newFrontierTarget = updateFrontierTarget(
+            robotPos: position,
+            map: occupancyMapData.map,
+            currentTarget: occupancyMapData.frontierTarget
+        )
+        
+        // Update occupancy map with new robot position and frontier target
+        occupancyMapData = OccupancyMapData(
+            map: occupancyMapData.map,
+            robotPosition: position,
+            mapResolution: occupancyMapData.mapResolution,
+            mapOrigin: SIMD3<Float>(0, 0, 0), // Simplified origin
+            frontierTarget: newFrontierTarget
+        )
+    }
+    
+    // MARK: - Initialization (Simplified)
+    
+    private func initializeEmptyOccupancyMap() {
+        privateMapGenerationID += 1
         persistentOccupancyMap = Array(repeating: Array(repeating: 0.0, count: 500), count: 500)
         
-        // Start with unknown occupancy map
         occupancyMapData = OccupancyMapData()
         
-        // Reset counters and floor detection
+        // Reset counters
         pointsProcessed = 0
         mapUpdates = 0
         obstaclePointsFiltered = 0
@@ -137,12 +198,9 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         print("🗺️ Map cleared - Generation ID: \(privateMapGenerationID)")
     }
     
-    // Detect if ultrawide camera is supported
     private func detectUltrawideSupport() -> Bool {
         let supportedFormats = ARWorldTrackingConfiguration.supportedVideoFormats
         return supportedFormats.contains { format in
-            // Ultrawide cameras typically have field of view > 100 degrees
-            // and specific capture device types
             if #available(iOS 13.0, *) {
                 return format.captureDeviceType == .builtInUltraWideCamera
             }
@@ -150,220 +208,95 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         }
     }
     
-    // Find the best ultrawide video format
-    private func selectUltrawideVideoFormat() -> ARConfiguration.VideoFormat? {
-        let supportedFormats = ARWorldTrackingConfiguration.supportedVideoFormats
-        
-        // Look for ultrawide camera formats
-        let ultrawideFormats = supportedFormats.filter { format in
-            if #available(iOS 13.0, *) {
-                return format.captureDeviceType == .builtInUltraWideCamera
-            }
-            return false
-        }
-        
-        // Prefer higher resolution formats
-        return ultrawideFormats.max { format1, format2 in
-            let resolution1 = format1.imageResolution.width * format1.imageResolution.height
-            let resolution2 = format2.imageResolution.width * format2.imageResolution.height
-            return resolution1 < resolution2
-        }
-    }
-    
-    // Create and configure a fresh AR configuration
     private func createConfiguration() -> ARWorldTrackingConfiguration {
         let config = ARWorldTrackingConfiguration()
         
-        // Set preferred frame rate to reduce processing load
         if #available(iOS 13.0, *) {
-            config.videoHDRAllowed = false // Disable HDR to reduce processing
+            config.videoHDRAllowed = false
         }
         
-        // Try to use ultrawide camera if available
-        if hasUltrawide, let ultrawideFormat = selectUltrawideVideoFormat() {
-            config.videoFormat = ultrawideFormat
-            currentCameraType = "Ultrawide"
+        if hasUltrawide {
+            // Try to use ultrawide for better tracking
+            let supportedFormats = ARWorldTrackingConfiguration.supportedVideoFormats
+            let ultrawideFormats = supportedFormats.filter { format in
+                if #available(iOS 13.0, *) {
+                    return format.captureDeviceType == .builtInUltraWideCamera
+                }
+                return false
+            }
+            
+            if let bestFormat = ultrawideFormats.max(by: { f1, f2 in
+                let res1 = f1.imageResolution.width * f1.imageResolution.height
+                let res2 = f2.imageResolution.width * f2.imageResolution.height
+                return res1 < res2
+            }) {
+                config.videoFormat = bestFormat
+                currentCameraType = "Ultrawide"
+            }
         } else {
             currentCameraType = "Standard Wide"
         }
         
-        // Configure the session for depth data if available
         if hasLiDAR {
             config.frameSemantics = [.sceneDepth, .smoothedSceneDepth]
             
-            // Check if scene reconstruction is supported and conditionally enable based on debug mode
-            if debugMode != 1 && ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
+            // Only enable scene reconstruction in debug mode 0
+            if debugMode == 0 && ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh) {
                 config.sceneReconstruction = .mesh
                 print("✅ Scene reconstruction enabled")
-            } else {
-                print("❌ Scene reconstruction disabled (debug mode \(debugMode))")
             }
         }
         
-        // Enable plane detection
         config.planeDetection = [.horizontal, .vertical]
-        
-        // Optimize for performance
         config.isAutoFocusEnabled = true
-        config.environmentTexturing = .none // Disable environment texturing to save resources
-        
-        // Log configuration details
-        print("📱 Device: \(UIDevice.current.model)")
-        print("🔧 LiDAR: \(hasLiDAR)")
-        print("📹 Camera: \(currentCameraType)")
-        print("🎯 Frame semantics: \(config.frameSemantics)")
-        print("🔍 Scene reconstruction: \(config.sceneReconstruction)")
+        config.environmentTexturing = .none
         
         return config
     }
     
-    // MARK: - Frontier Exploration
+    // MARK: - Session Control (Simplified)
     
-    // Find the nearest unexplored cell to the robot position
-    private func findNearestUnexploredCell(robotPos: (x: Int, y: Int), map: [[Int]]) -> (x: Int, y: Int)? {
-        let maxSearchRadius = 100 // Search within 100 cells of robot
-        var nearestDistance = Float.infinity
-        var nearestCell: (x: Int, y: Int)? = nil
-        
-        // Search in expanding squares around robot position
-        for radius in 1...maxSearchRadius {
-            let minX = max(0, robotPos.x - radius)
-            let maxX = min(499, robotPos.x + radius)
-            let minY = max(0, robotPos.y - radius)
-            let maxY = min(499, robotPos.y + radius)
-            
-            // Check cells at current radius
-            for x in minX...maxX {
-                for y in minY...maxY {
-                    // Only check perimeter of current radius (not interior)
-                    let isPerimeter = (x == minX || x == maxX || y == minY || y == maxY)
-                    if !isPerimeter { continue }
-                    
-                    // Check if cell is unexplored
-                    if map[y][x] == 2 { // Unexplored
-                        let distance = sqrt(Float((x - robotPos.x) * (x - robotPos.x) + (y - robotPos.y) * (y - robotPos.y)))
-                        if distance < nearestDistance {
-                            nearestDistance = distance
-                            nearestCell = (x: x, y: y)
-                        }
-                    }
-                }
-            }
-            
-            // If we found at least one unexplored cell at this radius, return the nearest
-            if nearestCell != nil {
-                return nearestCell
-            }
-        }
-        
-        return nil // No unexplored cells found within search radius
-    }
-    
-    // Update frontier target based on current map state
-    private func updateFrontierTarget(robotPos: (x: Int, y: Int), map: [[Int]], currentTarget: (x: Int, y: Int)?) -> (x: Int, y: Int)? {
-        // Check if current target is still valid (unexplored)
-        if let target = currentTarget {
-            if target.x >= 0 && target.x < 500 && target.y >= 0 && target.y < 500 {
-                if map[target.y][target.x] == 2 { // Still unexplored
-                    return target // Keep current target
-                }
-            }
-        }
-        
-        // Current target is explored or invalid, find new one
-        return findNearestUnexploredCell(robotPos: robotPos, map: map)
-    }
-    
-    // MARK: - Session Control
-    
-    // Start the AR session with the given options
     func start() {
-        // Check actual session state, not just our flag
-        guard session.currentFrame == nil || !isRunning else {
-            print("⚠️ Session already running, skipping start")
-            return
-        }
+        guard !isRunning else { return }
         
-        // Create fresh configuration
         configuration = createConfiguration()
+        statusMessage = hasLiDAR ? "Starting ARKit with LiDAR..." : "Starting ARKit camera tracking..."
         
-        // Update status message
-        if hasLiDAR {
-            statusMessage = "LiDAR mapping enabled, using \(currentCameraType) camera"
-        } else {
-            statusMessage = "Using \(currentCameraType) camera (no LiDAR - mapping disabled)"
-        }
-        
-        // Run the session with proper options
         session.run(configuration, options: [])
         isRunning = true
-        print("✅ AR session started")
-        
-        // Initialize first frontier target
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            guard let self = self else { return }
-            let initialTarget = self.updateFrontierTarget(
-                robotPos: self.occupancyMapData.robotPosition,
-                map: self.occupancyMapData.map,
-                currentTarget: nil
-            )
-            
-            if let target = initialTarget {
-                self.occupancyMapData = OccupancyMapData(
-                    map: self.occupancyMapData.map,
-                    robotPosition: self.occupancyMapData.robotPosition,
-                    mapResolution: self.occupancyMapData.mapResolution,
-                    mapOrigin: self.occupancyMapData.mapOrigin,
-                    frontierTarget: target
-                )
-                print("🎯 Initial frontier target: (\(target.x), \(target.y))")
-            }
-        }
+        print("✅ AR session started with lightweight localization")
     }
     
-    // Stop the AR session
     func stop() {
-        guard isRunning else {
-            print("⚠️ Session not running, skipping stop")
-            return
-        }
+        guard isRunning else { return }
         
         session.pause()
         isRunning = false
         statusMessage = "Session paused"
         print("⏸️ AR session stopped")
         
-        // Clear current data
         clearCurrentData()
     }
     
-    // Reset the AR session completely
     func reset() {
         print("🔄 Resetting AR session...")
         
-        // Clear current data first
         clearCurrentData()
         
         var newGenerationID = 0
         
-        // Clear map synchronously on the map update queue
         mapUpdateQueue.sync { [weak self] in
             guard let self = self else { return }
-            
-            // Increment generation ID to invalidate any pending updates
             self.privateMapGenerationID += 1
             newGenerationID = self.privateMapGenerationID
-            
-            // Clear persistent map
             self.persistentOccupancyMap = Array(repeating: Array(repeating: 0.0, count: 500), count: 500)
-            
-            print("🗺️ Map reset - Generation ID: \(self.privateMapGenerationID)")
         }
         
-        // Reset UI state on main thread
+        // Reset lightweight localization
+        localizationManager.reset()
+        
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            
             self.occupancyMapData = OccupancyMapData()
             self.pointsProcessed = 0
             self.mapUpdates = 0
@@ -374,108 +307,68 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
             self.mapGenerationID = newGenerationID
         }
         
-        // Stop the session properly if it's running
         if isRunning {
             session.pause()
             isRunning = false
         }
         
-        // Wait a moment for the session to fully stop
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            // Create fresh configuration
             self.configuration = self.createConfiguration()
-            
-            // Update status message
-            self.statusMessage = "Resetting session..."
-            
-            // Run session with reset options
             self.session.run(self.configuration, options: [.resetTracking, .removeExistingAnchors])
             self.isRunning = true
-            print("✅ AR session reset complete")
-            
-            // Update status after reset
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                if self.hasLiDAR {
-                    self.statusMessage = "LiDAR mapping enabled, using \(self.currentCameraType) camera (reset)"
-                } else {
-                    self.statusMessage = "Using \(self.currentCameraType) camera (no LiDAR - mapping disabled) (reset)"
-                }
-            }
+            self.statusMessage = "Reset complete"
         }
     }
     
-    // Clear all current sensor data
     private func clearCurrentData() {
         DispatchQueue.main.async {
             self.currentDepthData = nil
             self.currentPointCloud = nil
             self.currentCameraData = nil
             self.currentPose = nil
-            self.currentHeading = 0.0
         }
         
-        // Reset frame processing time
         lastProcessedTime = 0
     }
     
-    // Toggle debug mode to help diagnose rendering differences
     func toggleDebugMode() {
         debugMode = (debugMode + 1) % 3
-        
-        switch debugMode {
-        case 0:
-            statusMessage = "Debug: Standard mode"
-        case 1:
-            statusMessage = "Debug: No scene reconstruction"
-        case 2:
-            statusMessage = "Debug: Minimal debug options"
-        default:
-            break
-        }
-        
-        // Reset to apply new debug settings
+        statusMessage = "Debug mode: \(debugMode)"
         reset()
     }
     
-    // Clear occupancy map
     func clearOccupancyMap() {
         print("🧹 Clearing occupancy map...")
         
         var newGenerationID = 0
         
-        // Run on map update queue to ensure proper synchronization
         mapUpdateQueue.sync { [weak self] in
             guard let self = self else { return }
-            
-            // Increment generation ID to invalidate any pending updates
             self.privateMapGenerationID += 1
             newGenerationID = self.privateMapGenerationID
-            
-            // Clear persistent map
             self.persistentOccupancyMap = Array(repeating: Array(repeating: 0.0, count: 500), count: 500)
-            
-            print("🗺️ Map data cleared - Generation ID: \(self.privateMapGenerationID)")
         }
         
-        // Update UI on main thread
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             
-            // Reset all data (including frontier target)
-            self.occupancyMapData = OccupancyMapData()
+            // Preserve robot position from localization system
+            let currentRobotPos = self.localizationManager.currentRobotPosition
+            
+            self.occupancyMapData = OccupancyMapData(
+                map: Array(repeating: Array(repeating: 2, count: 500), count: 500),
+                robotPosition: currentRobotPos,
+                mapResolution: 0.05,
+                mapOrigin: SIMD3<Float>(0, 0, 0),
+                frontierTarget: nil
+            )
+            
             self.pointsProcessed = 0
             self.mapUpdates = 0
             self.obstaclePointsFiltered = 0
-            self.floorDetected = false
-            self.detectedFloorPlane = nil
-            self.floorY = 0.0
-            self.currentHeading = 0.0
-            self.mapGenerationID = newGenerationID // Update published property
+            self.mapGenerationID = newGenerationID
             
-            self.statusMessage = "Occupancy map cleared - Generation ID: \(newGenerationID)"
-            
-            print("✅ Map clear complete")
-            print("🎯 Frontier exploration reset")
+            self.statusMessage = "Map cleared"
         }
     }
     
@@ -483,52 +376,12 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         return session
     }
     
-    // MARK: - Coordinate Transformations
+    // MARK: - Simple Obstacle Detection (Fast)
     
-    // Convert world coordinates to map grid coordinates
-    private func worldToMap(_ worldPos: SIMD3<Float>) -> (x: Int, y: Int)? {
-        let mapData = occupancyMapData
+    private func simpleObstacleDetection(_ depthData: ARDepthData,
+                                       cameraTransform: simd_float4x4,
+                                       intrinsics: simd_float3x3) -> [SIMD3<Float>] {
         
-        // Calculate relative position from map origin
-        let relativeX = worldPos.x - mapData.mapOrigin.x
-        let relativeZ = worldPos.z - mapData.mapOrigin.z
-        
-        // Convert to grid coordinates (using X and Z, Y is height)
-        let gridX = Int((relativeX / mapData.mapResolution) + 250) // 250 is center
-        let gridY = Int((relativeZ / mapData.mapResolution) + 250)
-        
-        // Check bounds
-        if gridX >= 0 && gridX < 500 && gridY >= 0 && gridY < 500 {
-            return (x: gridX, y: gridY)
-        }
-        return nil
-    }
-    
-    // Extract heading direction in XZ plane (top-down view)
-    private func extractHeading(from cameraTransform: simd_float4x4) -> Float {
-        // Get the camera's forward direction vector (negative Z axis in camera space)
-        // In ARKit, the camera looks down the negative Z axis, but we want the actual forward direction
-        let forwardVector = SIMD3<Float>(
-            cameraTransform[2][0],   // Z column X component (flip sign)
-            cameraTransform[2][1],   // Z column Y component (flip sign)
-            cameraTransform[2][2]    // Z column Z component (flip sign)
-        )
-        
-        // Project the forward vector onto the XZ plane (ignore Y/height component)
-        let forwardXZ = SIMD2<Float>(forwardVector.x, forwardVector.z)
-        
-        // Calculate heading angle in XZ plane and negate to match rotation direction
-        // atan2(x, z) gives angle from positive Z axis (north)
-        // Negate to make clockwise phone rotation = clockwise arrow rotation
-        let heading = -atan2(forwardXZ.x, forwardXZ.y)
-        
-        return heading
-    }
-    
-    // MARK: - LiDAR Processing
-    
-    // Convert depth map to filtered 3D obstacle points (robot navigation height only)
-    private func depthMapToObstaclePoints(_ depthData: ARDepthData, cameraTransform: simd_float4x4, intrinsics: simd_float3x3) -> [SIMD3<Float>] {
         let depthMap = depthData.depthMap
         
         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
@@ -536,116 +389,164 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         
         let width = CVPixelBufferGetWidth(depthMap)
         let height = CVPixelBufferGetHeight(depthMap)
-        let baseAddress = CVPixelBufferGetBaseAddress(depthMap)
-        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
         
-        guard let depthBuffer = baseAddress?.assumingMemoryBound(to: Float32.self) else {
+        guard let depthBuffer = CVPixelBufferGetBaseAddress(depthMap)?.assumingMemoryBound(to: Float32.self) else {
             return []
         }
         
-        var obstaclePoints: [SIMD3<Float>] = []
-        let estimatedCapacity = Int((width * height) / (depthSamplingRate * depthSamplingRate))
-        obstaclePoints.reserveCapacity(estimatedCapacity)
+        var obstacles: [SIMD3<Float>] = []
+        obstacles.reserveCapacity(1000) // Pre-allocate for speed
         
-        // Use detected floor level, or fall back to camera position if no floor detected
-        let referenceFloorY = floorDetected ? floorY : (cameraTransform.columns.3.y - robotHeight)
+        let bytesPerRow = CVPixelBufferGetBytesPerRow(depthMap) / MemoryLayout<Float32>.size
         
-        // Sample every depthSamplingRate pixels for performance
+        // Aggressive sampling for speed (every 8th pixel)
         for y in stride(from: 0, to: height, by: depthSamplingRate) {
             for x in stride(from: 0, to: width, by: depthSamplingRate) {
-                let pixelIndex = y * (bytesPerRow / MemoryLayout<Float32>.size) + x
-                let depth = depthBuffer[pixelIndex]
+                let depth = depthBuffer[y * bytesPerRow + x]
                 
-                // Skip invalid or out-of-range depths
-                guard depth > minDepthRange && depth < maxDepthRange && depth.isFinite else {
-                    continue
-                }
+                // Simple, fast depth filtering
+                guard depth > minDepthRange && depth < maxDepthRange && depth.isFinite else { continue }
                 
-                // Convert pixel coordinates to normalized camera coordinates
+                // Convert to world space (simplified - trust ARKit's intrinsics)
                 let fx = intrinsics[0][0]
                 let fy = intrinsics[1][1]
                 let cx = intrinsics[2][0]
                 let cy = intrinsics[2][1]
                 
-                // Convert to camera space
                 let cameraX = (Float(x) - cx) * depth / fx
                 let cameraY = (Float(y) - cy) * depth / fy
-                let cameraZ = -depth // ARKit uses negative Z for forward
+                let cameraZ = -depth
                 
                 let cameraPoint = SIMD4<Float>(cameraX, cameraY, cameraZ, 1.0)
-                
-                // Transform to world space
                 let worldPoint = cameraTransform * cameraPoint
-                let worldPosition = worldPoint.xyz
                 
-                // Filter by height relative to floor - only keep points that would block robot navigation
-                let heightAboveFloor = worldPosition.y - referenceFloorY
-                
-                if heightAboveFloor >= minObstacleHeight && heightAboveFloor <= maxObstacleHeight {
-                    // This point represents a potential obstacle for robot navigation
-                    obstaclePoints.append(worldPosition)
+                // Simple height filter relative to camera (trust ARKit's coordinate system)
+                let heightAboveCamera = worldPoint.y - cameraTransform.columns.3.y
+                if heightAboveCamera > -robotHeight && heightAboveCamera < 0.5 {
+                    obstacles.append(worldPoint.xyz)
                 }
             }
         }
         
-        return obstaclePoints
+        return obstacles
     }
     
-    // Update occupancy map with filtered obstacle points using ray tracing
+    // MARK: - Coordinate Transformations (Simplified)
+    
+    private func worldToMap(_ worldPos: SIMD3<Float>) -> (x: Int, y: Int)? {
+        // Simple coordinate transform - trust ARKit's origin
+        let mapData = occupancyMapData
+        
+        let relativeX = worldPos.x - mapData.mapOrigin.x
+        let relativeZ = worldPos.z - mapData.mapOrigin.z
+        
+        let gridX = Int((relativeX / mapData.mapResolution) + 250)
+        let gridY = Int((relativeZ / mapData.mapResolution) + 250)
+        
+        if gridX >= 0 && gridX < 500 && gridY >= 0 && gridY < 500 {
+            return (x: gridX, y: gridY)
+        }
+        return nil
+    }
+    
+    // MARK: - Frontier Exploration (Unchanged)
+    
+    private func findNearestUnexploredCell(robotPos: (x: Int, y: Int), map: [[Int]]) -> (x: Int, y: Int)? {
+        let maxSearchRadius = 100
+        var nearestDistance = Float.infinity
+        var nearestCell: (x: Int, y: Int)? = nil
+        
+        for radius in 1...maxSearchRadius {
+            let minX = max(0, robotPos.x - radius)
+            let maxX = min(499, robotPos.x + radius)
+            let minY = max(0, robotPos.y - radius)
+            let maxY = min(499, robotPos.y + radius)
+            
+            for x in minX...maxX {
+                for y in minY...maxY {
+                    let isPerimeter = (x == minX || x == maxX || y == minY || y == maxY)
+                    if !isPerimeter { continue }
+                    
+                    if map[y][x] == 2 {
+                        let distance = sqrt(Float((x - robotPos.x) * (x - robotPos.x) + (y - robotPos.y) * (y - robotPos.y)))
+                        if distance < nearestDistance {
+                            nearestDistance = distance
+                            nearestCell = (x: x, y: y)
+                        }
+                    }
+                }
+            }
+            
+            if nearestCell != nil {
+                return nearestCell
+            }
+        }
+        
+        return nil
+    }
+    
+    private func updateFrontierTarget(robotPos: (x: Int, y: Int), map: [[Int]], currentTarget: (x: Int, y: Int)?) -> (x: Int, y: Int)? {
+        if let target = currentTarget {
+            if target.x >= 0 && target.x < 500 && target.y >= 0 && target.y < 500 {
+                if map[target.y][target.x] == 2 {
+                    return target
+                }
+            }
+        }
+        
+        return findNearestUnexploredCell(robotPos: robotPos, map: map)
+    }
+    
     private func updateOccupancyMapWithObstaclePoints(_ obstaclePoints: [SIMD3<Float>], cameraPosition: SIMD3<Float>) {
-        // Capture current generation ID to check for stale updates
+        // Only update if tracking is reliable
+        guard isTrackingReliable else {
+            print("⚠️ Skipping map update - tracking unreliable")
+            return
+        }
+        
         let currentGenerationID = privateMapGenerationID
         
         mapUpdateQueue.async { [weak self] in
             guard let self = self else { return }
             
-            // Check if this update is still valid (map hasn't been cleared)
             guard currentGenerationID == self.privateMapGenerationID else {
-                print("⚠️ Ignoring stale map update (Generation: \(currentGenerationID) vs Current: \(self.privateMapGenerationID))")
                 return
             }
             
             var mapCopy = self.persistentOccupancyMap
             let mapData = self.occupancyMapData
             
-            // Convert camera position to map coordinates
             guard let cameraMapPos = self.worldToMap(cameraPosition) else { return }
             
-            // Keep track of cells we've already processed in this frame to avoid double-updates
             var processedCells: Set<String> = Set()
             
             for obstaclePoint in obstaclePoints {
-                // Convert world point to map coordinates
                 guard let obstacleMapPos = self.worldToMap(obstaclePoint) else { continue }
                 
-                // Perform ray tracing from camera to obstacle
                 let rayPoints = self.bresenhamLine(
                     from: (x: cameraMapPos.x, y: cameraMapPos.y),
                     to: (x: obstacleMapPos.x, y: obstacleMapPos.y)
                 )
                 
-                // Skip very short rays (likely noise)
                 guard rayPoints.count > 2 else { continue }
                 
-                // Mark cells along the ray as free space (except the last one)
+                // Mark free space
                 for i in 0..<(rayPoints.count - 1) {
                     let point = rayPoints[i]
                     let cellKey = "\(point.x),\(point.y)"
                     
                     if point.x >= 0 && point.x < 500 && point.y >= 0 && point.y < 500 && !processedCells.contains(cellKey) {
-                        // More conservative free space update to prevent oscillation
                         mapCopy[point.y][point.x] = max(-1.0, mapCopy[point.y][point.x] - 0.05)
                         processedCells.insert(cellKey)
                     }
                 }
                 
-                // Mark the obstacle point as occupied
+                // Mark obstacle
                 if rayPoints.count > 0 {
                     let obstacleMapPoint = rayPoints.last!
                     let cellKey = "\(obstacleMapPoint.x),\(obstacleMapPoint.y)"
                     
                     if obstacleMapPoint.x >= 0 && obstacleMapPoint.x < 500 && obstacleMapPoint.y >= 0 && obstacleMapPoint.y < 500 {
-                        // Stronger obstacle confidence to overcome free space rays
                         let currentConfidence = mapCopy[obstacleMapPoint.y][obstacleMapPoint.x]
                         mapCopy[obstacleMapPoint.y][obstacleMapPoint.x] = min(1.0, currentConfidence + 0.15)
                         processedCells.insert(cellKey)
@@ -653,90 +554,76 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
                 }
             }
             
-            // Double-check generation ID before applying changes
             guard currentGenerationID == self.privateMapGenerationID else {
-                print("⚠️ Map cleared during processing, discarding update")
                 return
             }
             
-            // Convert confidence map to discrete occupancy values with hysteresis
+            // Convert to discrete map
             var discreteMap = Array(repeating: Array(repeating: 2, count: 500), count: 500)
             for y in 0..<500 {
                 for x in 0..<500 {
                     let confidence = mapCopy[y][x]
                     let currentState = mapData.map[y][x]
                     
-                    // Use hysteresis to prevent oscillation
                     switch currentState {
-                    case 0: // Currently free
+                    case 0:
                         if confidence > 0.4 {
-                            discreteMap[y][x] = 1 // Switch to occupied only with higher threshold
+                            discreteMap[y][x] = 1
                         } else if confidence < -0.2 {
-                            discreteMap[y][x] = 0 // Stay free
+                            discreteMap[y][x] = 0
                         } else {
-                            discreteMap[y][x] = 2 // Unknown
+                            discreteMap[y][x] = 2
                         }
-                    case 1: // Currently occupied
+                    case 1:
                         if confidence < -0.4 {
-                            discreteMap[y][x] = 0 // Switch to free only with lower threshold
+                            discreteMap[y][x] = 0
                         } else if confidence > 0.2 {
-                            discreteMap[y][x] = 1 // Stay occupied
+                            discreteMap[y][x] = 1
                         } else {
-                            discreteMap[y][x] = 2 // Unknown
+                            discreteMap[y][x] = 2
                         }
-                    default: // Currently unknown
+                    default:
                         if confidence > 0.3 {
-                            discreteMap[y][x] = 1 // Occupied
+                            discreteMap[y][x] = 1
                         } else if confidence < -0.3 {
-                            discreteMap[y][x] = 0 // Free
+                            discreteMap[y][x] = 0
                         } else {
-                            discreteMap[y][x] = 2 // Stay unknown
+                            discreteMap[y][x] = 2
                         }
                     }
                 }
             }
             
-            // Update persistent map and published data
             self.persistentOccupancyMap = mapCopy
             
             DispatchQueue.main.async {
-                // Final check before updating UI
                 guard currentGenerationID == self.privateMapGenerationID else {
-                    print("⚠️ Map cleared before UI update, skipping")
                     return
                 }
                 
-                // Update frontier target based on new map state
+                let robotPos = self.localizationManager.currentRobotPosition
+                
                 let newFrontierTarget = self.updateFrontierTarget(
-                    robotPos: mapData.robotPosition,
+                    robotPos: robotPos,
                     map: discreteMap,
                     currentTarget: mapData.frontierTarget
                 )
                 
                 self.occupancyMapData = OccupancyMapData(
                     map: discreteMap,
-                    robotPosition: mapData.robotPosition,
-                    mapResolution: mapData.mapResolution,
-                    mapOrigin: mapData.mapOrigin,
+                    robotPosition: robotPos,
+                    mapResolution: 0.05,
+                    mapOrigin: SIMD3<Float>(0, 0, 0),
                     frontierTarget: newFrontierTarget
                 )
+                
                 self.pointsProcessed += obstaclePoints.count
                 self.obstaclePointsFiltered = obstaclePoints.count
                 self.mapUpdates += 1
-                
-                // Log frontier target changes
-                if let target = newFrontierTarget {
-                    if mapData.frontierTarget == nil || mapData.frontierTarget!.x != target.x || mapData.frontierTarget!.y != target.y {
-                        print("🎯 New frontier target: (\(target.x), \(target.y))")
-                    }
-                } else if mapData.frontierTarget != nil {
-                    print("🏁 No more frontier targets - exploration complete!")
-                }
             }
         }
     }
     
-    // Bresenham's line algorithm for ray tracing
     private func bresenhamLine(from start: (x: Int, y: Int), to end: (x: Int, y: Int)) -> [(x: Int, y: Int)] {
         var points: [(x: Int, y: Int)] = []
         
@@ -768,25 +655,26 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
         return points
     }
     
-    // MARK: - ARSessionDelegate methods
+    // MARK: - ARSessionDelegate (Simplified for Speed)
     
     func session(_ session: ARSession, didAdd anchors: [ARAnchor]) {
         for anchor in anchors {
+            // Let lightweight localization handle anchors for stability
+            localizationManager.addAnchor(anchor)
+            
+            // Handle floor plane detection
             if let planeAnchor = anchor as? ARPlaneAnchor,
                planeAnchor.alignment == .horizontal {
                 
-                // Check if this is likely a floor plane (below camera)
                 let planeY = planeAnchor.transform.columns.3.y
                 let cameraY = session.currentFrame?.camera.transform.columns.3.y ?? 0
                 
-                // Floor should be below the camera
                 if planeY < cameraY && (!floorDetected || planeY < floorY) {
                     detectedFloorPlane = planeAnchor
                     floorY = planeY
                     
                     DispatchQueue.main.async {
                         self.floorDetected = true
-                        print("✅ Floor detected at Y: \(self.floorY)")
                     }
                 }
             }
@@ -799,160 +687,106 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
                planeAnchor.alignment == .horizontal,
                planeAnchor.identifier == detectedFloorPlane?.identifier {
                 
-                // Update floor plane
                 detectedFloorPlane = planeAnchor
                 floorY = planeAnchor.transform.columns.3.y
-                print("🔄 Floor updated at Y: \(floorY)")
             }
         }
     }
     
     func session(_ session: ARSession, didRemove anchors: [ARAnchor]) {
         for anchor in anchors {
+            // Notify lightweight localization
+            localizationManager.removeAnchor(anchor)
+            
             if let planeAnchor = anchor as? ARPlaneAnchor,
                planeAnchor.identifier == detectedFloorPlane?.identifier {
                 
                 DispatchQueue.main.async {
                     self.floorDetected = false
                     self.detectedFloorPlane = nil
-                    print("❌ Floor plane lost")
                 }
             }
         }
     }
     
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
-        // Throttle frame processing to prevent retention
+        // Simplified, fast frame processing
         let currentTime = frame.timestamp
         guard currentTime - lastProcessedTime >= minFrameInterval else {
-            return // Skip this frame
+            return // Throttle frames
         }
         lastProcessedTime = currentTime
         
-        // Process on background queue to avoid blocking
-        frameProcessingQueue.async { [weak self] in
-            guard let self = self else { return }
-            
-            // Check tracking quality and provide feedback
-            let trackingState = frame.camera.trackingState
-            
-            switch trackingState {
-            case .normal:
-                // Only update status if it's currently showing tracking issues
-                if self.statusMessage.contains("tracking") {
-                    DispatchQueue.main.async {
-                        if self.hasLiDAR {
-                            self.statusMessage = "LiDAR mapping enabled, using \(self.currentCameraType) camera"
-                        } else {
-                            self.statusMessage = "Using \(self.currentCameraType) camera (no LiDAR - mapping disabled)"
-                        }
-                    }
-                }
-            case .limited(let reason):
-                DispatchQueue.main.async {
-                    switch reason {
-                    case .initializing:
-                        self.statusMessage = "Initializing tracking... (move device slowly)"
-                    case .insufficientFeatures:
-                        self.statusMessage = "Tracking limited - point at textured surfaces"
-                    case .excessiveMotion:
-                        self.statusMessage = "Tracking limited - move device slower"
-                    case .relocalizing:
-                        self.statusMessage = "Relocalizing tracking..."
-                    @unknown default:
-                        self.statusMessage = "Tracking limited"
-                    }
-                }
-            case .notAvailable:
-                DispatchQueue.main.async {
-                    self.statusMessage = "Tracking not available"
-                }
+        // Use lightweight localization (fast ARKit-native tracking)
+        let localizationSuccess = localizationManager.updateWithFrame(frame)
+        
+        // Update status simply
+        DispatchQueue.main.async { [weak self] in
+            if localizationSuccess {
+                self?.statusMessage = "ARKit tracking: \(self?.trackingQuality ?? "Unknown")"
+            } else {
+                self?.statusMessage = "ARKit tracking unstable"
             }
+        }
+        
+        // Create pose data for publishers
+        let poseData = PoseData(
+            position: frame.camera.transform.columns.3.xyz,
+            orientation: simd_quatf(frame.camera.transform),
+            timestamp: frame.timestamp
+        )
+        
+        DispatchQueue.main.async { [weak self] in
+            self?.currentPose = poseData
+        }
+        
+        posePublisher.send(poseData)
+        
+        // Process depth data only when tracking is reliable
+        if localizationSuccess && hasLiDAR,
+           let sceneDepth = frame.sceneDepth ?? frame.smoothedSceneDepth {
             
-            // Process camera image (extract data but don't retain frame)
-            let cameraData = CameraData(
-                imageBuffer: frame.capturedImage,
-                cameraIntrinsics: frame.camera.intrinsics,
-                cameraTransform: frame.camera.transform,
-                timestamp: frame.timestamp
-            )
-            
-            // Process device pose
-            let pose = PoseData(
-                position: frame.camera.transform.columns.3.xyz,
-                orientation: simd_quatf(frame.camera.transform),
-                timestamp: frame.timestamp
-            )
-            
-            // Extract heading from camera transform matrix (direction in XZ plane)
-            let heading = self.extractHeading(from: frame.camera.transform)
-            
-            // Update UI on main thread with batched updates
-            DispatchQueue.main.async {
-                self.currentCameraData = cameraData
-                self.currentPose = pose
-                self.currentHeading = heading
+            // Fast depth processing on background queue
+            frameProcessingQueue.async { [weak self] in
+                guard let self = self else { return }
                 
-                // Update robot position on occupancy map based on pose
-                if let robotMapPos = self.worldToMap(pose.position) {
-                    // Update frontier target for new robot position
-                    let newFrontierTarget = self.updateFrontierTarget(
-                        robotPos: robotMapPos,
-                        map: self.occupancyMapData.map,
-                        currentTarget: self.occupancyMapData.frontierTarget
-                    )
-                    
-                    self.occupancyMapData = OccupancyMapData(
-                        map: self.occupancyMapData.map,
-                        robotPosition: robotMapPos,
-                        mapResolution: self.occupancyMapData.mapResolution,
-                        mapOrigin: self.occupancyMapData.mapOrigin,
-                        frontierTarget: newFrontierTarget
-                    )
-                }
-            }
-            
-            // Send to publishers (only for subscribers that need real-time data)
-            self.cameraPublisher.send(cameraData)
-            self.posePublisher.send(pose)
-            
-            // Process depth data if available and update occupancy map
-            if let sceneDepth = frame.sceneDepth ?? frame.smoothedSceneDepth {
-                let depthData = DepthData(
-                    depthMap: sceneDepth.depthMap,
-                    confidenceMap: sceneDepth.confidenceMap,
-                    timestamp: frame.timestamp
+                // Simple, fast obstacle detection
+                let obstaclePoints = self.simpleObstacleDetection(
+                    sceneDepth,
+                    cameraTransform: frame.camera.transform,
+                    intrinsics: frame.camera.intrinsics
                 )
                 
-                DispatchQueue.main.async {
-                    self.currentDepthData = depthData
-                }
-                self.depthPublisher.send(depthData)
-                
-                // Process depth data for occupancy mapping
-                if self.hasLiDAR && trackingState == .normal {
-                    let obstaclePoints = self.depthMapToObstaclePoints(
-                        sceneDepth,
-                        cameraTransform: frame.camera.transform,
-                        intrinsics: frame.camera.intrinsics
-                    )
+                if !obstaclePoints.isEmpty {
+                    let cameraPosition = frame.camera.transform.columns.3.xyz
+                    self.updateOccupancyMapWithObstaclePoints(obstaclePoints, cameraPosition: cameraPosition)
                     
-                    if !obstaclePoints.isEmpty {
-                        self.updateOccupancyMapWithObstaclePoints(obstaclePoints, cameraPosition: pose.position)
-                    }
-                    
-                    // Create point cloud for visualization (using filtered obstacle points)
+                    // Create point cloud for visualization
                     let pointCloud = PointCloudData(
-                        points: Array(obstaclePoints.prefix(1000)), // Limit for performance
-                        colors: obstaclePoints.prefix(1000).map { _ in SIMD4<Float>(1, 0, 0, 1) }, // Red for obstacles
+                        points: Array(obstaclePoints.prefix(500)), // Limit for speed
+                        colors: obstaclePoints.prefix(500).map { _ in SIMD4<Float>(1, 0, 0, 1) },
                         timestamp: frame.timestamp
                     )
                     
                     DispatchQueue.main.async {
                         self.currentPointCloud = pointCloud
                     }
+                    
                     self.pointCloudPublisher.send(pointCloud)
                 }
+                
+                // Send depth data to publisher
+                let depthDataObj = DepthData(
+                    depthMap: sceneDepth.depthMap,
+                    confidenceMap: sceneDepth.confidenceMap,
+                    timestamp: frame.timestamp
+                )
+                
+                DispatchQueue.main.async {
+                    self.currentDepthData = depthDataObj
+                }
+                
+                self.depthPublisher.send(depthDataObj)
             }
         }
     }
@@ -973,7 +807,6 @@ class RoboticsFramework: NSObject, ARSessionDelegate, ObservableObject {
     func sessionInterruptionEnded(_ session: ARSession) {
         DispatchQueue.main.async {
             self.statusMessage = "Session resumed"
-            // Don't automatically restart - let user control this
             self.isRunning = false
         }
     }
